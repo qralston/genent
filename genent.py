@@ -393,6 +393,25 @@ issuer = ''
 # Obtain the objects to enumerate.
 objects = parser.objects()
 
+# For Python 3.6 and later, enumerating dictionaries is guaranteed to enumerate
+# them in insertion order:
+#
+# https://stackoverflow.com/questions/1867861/how-to-keep-keys-values-in-same-order-as-declared
+#
+# However, this is not guaranteed for earlier versions of Python.  And there is
+# no guarantee that the LDIF records we are reading are ordered in any
+# consistent way.  It shouldn't be the case that the entries we output are
+# ordered differently depending on the order of the LDIF objects we read; we
+# should be consistent.
+#
+# To do this, we will store entries we synthesize in a dictionary where the key
+# is the uid (or gid), and the value is the synthesized entry.  After we've
+# synthesized all entries, then we will sort the keys in the dictionary and
+# enumerate the entries in that order.
+#
+# This is the dictionary we use to store the entries.
+entries = {}
+
 for object in objects:
 
     # If we're looking for users, skip objects that aren't users; if we're
@@ -442,8 +461,13 @@ for object in objects:
         else:
             pw_gid = gid_domain_users
 
-        # Print the synthesized passwd(5) entry.
-        print("%s:*:%s:%s:%s:/home/%s:/bin/bash" % (sam_account_name_lc, base + sid.rid, pw_gid, objects[object]['cn'], sam_account_name_lc))
+        # Synthesize and store the passwd(5) entry.
+
+        pw_uid = base + sid.rid
+        if pw_uid in entries:
+            log.warning('skipping object %s: id %u duplicates existing entry %s', object, pw_uid, entries[pw_uid])
+        else:
+            entries[pw_uid] = "%s:*:%s:%s:%s:/home/%s:/bin/bash" % (sam_account_name_lc, pw_uid, pw_gid, objects[object]['cn'], sam_account_name_lc)
 
     else:
 
@@ -508,7 +532,8 @@ for object in objects:
         if 'member' in objects[object]:
             expand_members(group_members, object, objects, objects[object]['member'], seen_dns)
 
-        # Finally, print the synthesized group(5) entry.
+        # Now that we've expanded the group membership, synthesize and store
+        # the group(5) entry.
         #
         # While we would like to match the member ordering that sssd uses, when
         # sssd expands group members, it doesn't sort the expanded members
@@ -522,7 +547,16 @@ for object in objects:
         # membership set, and it will produce the same output on consecutive
         # invocations.
 
-        print("%s:*:%s:%s" % (sam_account_name_lc, base + sid.rid, ','.join(sorted(group_members.keys()))))
+        gr_gid = base + sid.rid
+        if gr_gid in entries:
+            log.warning('skipping object %s: id %u duplicates existing entry %s', object, gr_gid, entries[gr_gid])
+        else:
+            entries[gr_gid] = "%s:*:%s:%s" % (sam_account_name_lc, gr_gid, ','.join(sorted(group_members.keys())))
+
+# Finally, print the entries we accumulated, sorted by the uid (or gid).
+
+for key in sorted(entries.keys()):
+    print("%s" % entries[key])
 
 # We're done.
 raise SystemExit(0)
