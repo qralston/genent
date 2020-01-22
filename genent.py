@@ -232,29 +232,42 @@ class MyLDIF(LDIFParser):
     def objects(self):
         return self._objects
 
-def expand_members(sam_account_names, group_to_expand, objects, dn_list, recurse_level):
+def expand_members(sam_account_names, group_to_expand, objects, dn_list, seen_dns):
 
     # Active Directory permits groups to contain other groups.  When sssd
     # synthesizes the gr_mem list for a group, it recursively expands any
     # groups it finds.  We will do the same.
     #
-    # In order to prevent an infinite recursion loop, we will set a maximum
-    # recursion limit.  We could also prevent infinite recursion by remembering
-    # which dn objects we've already attempted to expand, but simply
-    # implementing a maximum recursion limit is simpler.
-
-    if recurse_level >= max_group_recursion_level:
-        log.warning('maximum group recursion level %u reached expanding group %s', max_group_recursion_level, group_to_expand)
-        return 1
+    # I am not convinced that Active Directory doesn't permit include loops
+    # (e.g., group A include group B, group B includes group C, group C
+    # includes group A), so we will guard against infinite loops in recursive
+    # group expansion by noting which dns we've already seen.
 
     for dn in dn_list:
-        if dn in objects:
-            object = objects[dn]
-            if object['is_user']:
-                sam_account_names[object['sAMAccountName'].lower()] = 1
+        if dn in seen_dns:
+            log.debug('dn=%s already seen when expanding group %s membership', dn, group_to_expand)
+        else:
+            log.debug('dn=%s not already seen when expanding group %s membership', dn, group_to_expand)
+            seen_dns[dn] = 1
+            if dn in objects:
+                object = objects[dn]
+                if object['is_user']:
+                    log.debug('expanded user dn=%s as member of group %s', object['sAMAccountName'].lower(), group_to_expand)
+                    sam_account_names[object['sAMAccountName'].lower()] = 1
+                else:
+                    if 'member' in objects[dn]:
+                        log.debug('group dn=%s in group %s has members; expanding recursively', dn, group_to_expand)
+                        expand_members(sam_account_names, group_to_expand, objects, object['member'], seen_dns)
             else:
-                if 'member' in objects[dn]:
-                    expand_members(sam_account_names, group_to_expand, objects, object['member'], recurse_level + 1)
+                # This is a a tricky case.  This can happen normally for (e.g.)
+                # Exchange public folders that are members of a mail-enabled
+                # security group, because we only process user and group
+                # objects when reading LDIF data, and Exchange public folders
+                # are neither.  But this might also mean that there were
+                # regular user/group objects missing in the dump.  Really, the
+                # only way to rule out the latter case is to process *all*
+                # objects in the LDIF dump (not just users/groups).  FIXME?
+                log.debug('unknown dn=%s encountered when expanding group %s', dn, group_to_expand)
 
 # Initialize a new OptionParser.
 
@@ -419,8 +432,9 @@ for object in objects:
         # those members, up to the maximum recursion limit.
 
         group_members = {}
+        seen_dns = {}
         if 'member' in objects[object]:
-            expand_members(group_members, object, objects, objects[object]['member'], 0)
+            expand_members(group_members, object, objects, objects[object]['member'], seen_dns)
 
         # Print the synthesized group(5) entry.
         print("%s:*:%s:%s" % (sam_account_name_lc, base + sid.rid, ','.join(sorted(group_members.keys()))))
