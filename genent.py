@@ -136,6 +136,17 @@ class MyLDIF(LDIFParser):
             if 'OU=Domain Controllers' in dn.split(','):
                 is_dc = True
 
+        # A group must have the groupType attribute.
+
+        if is_group:
+
+            if not 'groupType' in entry:
+                log.warning('entry with dn=%s is a group but lacks groupType attribute; skipping', dn)
+                return 1
+            else:
+                grouptype = int(entry['groupType'][0].decode())
+                log.debug('entry with dn=%s is a group with groupType %d', dn, grouptype)
+
         # The sAMAccountName attribute must be a list, must have only one
         # element in it, and that element must not contain a colon.
 
@@ -221,12 +232,20 @@ class MyLDIF(LDIFParser):
             'is_dc': is_dc,
         }
 
-        # If this object is a group, add any member attributes.
+        # If this object is a group, add some additional attributes.
 
-        if is_group and 'member' in entry:
-            self._objects[dn]['member'] = []
-            for member in entry['member']:
-                self._objects[dn]['member'].append(member.decode())
+        if is_group:
+
+            # Add the groupType.
+
+            self._objects[dn]['groupType'] = grouptype
+
+            # Add any member attributes.
+
+            if 'member' in entry:
+                self._objects[dn]['member'] = []
+                for member in entry['member']:
+                    self._objects[dn]['member'].append(member.decode())
 
     # A simple method to return our objects.
     def objects(self):
@@ -282,6 +301,7 @@ p.add_option("-q", "--quiet", action="store_true", dest="quiet", help="suppress 
 p.add_option("-v", "--verbose", action="store_true", dest="verbose", help="enable verbose messages")
 
 # Additional options.
+p.add_option("-a", "--all-groups", action="store_true", dest="map_all_groups", help="map all group types instead of only non-system security groups")
 p.add_option("-l", "--ldif-file", action="store", dest="ldif_file", help="the LDIF file to read")
 p.add_option("-u", "--users", action="store_true", dest="users", help="emit passwd(5) entries")
 p.add_option("-g", "--groups", action="store_true", dest="groups", help="emit group(5) entries")
@@ -427,16 +447,81 @@ for object in objects:
 
     else:
 
-        # If this group object has members (and most group objects do—that's
-        # kind of why they are created in the first place), recursively expand
-        # those members, up to the maximum recursion limit.
+        # Per Microsoft, this is how to decode the groupType:
+        #
+        #          1 (0x00000001) - a group that is created by the system
+        #          2 (0x00000002) - a group with global scope
+        #          4 (0x00000004) - a group with domain local scope
+        #          8 (0x00000008) - a group with universal scope
+        #         16 (0x00000010) - an APP_BASIC group for Windows Server Authorization Manager
+        #         32 (0x00000020) - an APP_QUERY group for Windows Server Authorization Manager
+        # 2147483648 (0x80000000) - a security group
+        #
+        # sssd only maps security groups that aren't created by the system.
+        # And while we have no groups with the 0x10 or 0x20 attributes, I will
+        # assume that sssd won't map them, either.
+        #
+        # So that leave us with the following tests to determine if we will
+        # emit the group:
+        #
+        #   groupType & 0x80000000 == 0x80000000
+        #   groupType & 0x31 == 0
+        #
+        # Complicating this is the fact that the groupType value as expressed
+        # in LDIF is a signed 32-bit integer, so any security group will always
+        # be a large negative number.
+        #
+        # But if --all-groups was specified, then we ignore all of this and
+        # emit every group anyway.
+
+        if opt.map_all_groups:
+            log.debug('skipping groupType checks for %s because --all-groups was specified', object)
+        else:
+            if objects[object]['groupType'] >= 0:
+                log.debug('skipping non-security group %s because --all-groups was not specified', object)
+                continue
+            else:
+                # Convert from 32-bit signed to 32-bit unsigned.
+                grouptype = objects[object]['groupType'] + 4294967296
+                if grouptype & 0x00000001:
+                    log.debug('skipping system-created-security group %s because --all-groups was not specified', object)
+                    continue
+                elif grouptype & 0x00000010:
+                    log.debug('skipping APP_BASIC security group %s because --all-groups was not specified', object)
+                    continue
+                elif grouptype & 0x00000020:
+                    log.debug('skipping APP_QUERY security group %s because --all-groups was not specified', object)
+                    continue
+
+        # If we're here, either --all-groups was specified, or this group is a
+        # non-system security group.  Either way, we're going to emit it.  But
+        # before we do that, we need to expand the group membership.
+        #
+        # Note that if the group has other groups as members (nested group
+        # expansion), we do *not* apply the groupType restrictions above to
+        # those group expansions.  This is non-intuitive, but it matches
+        # Microsoft's behavior: it is legal to have a non-security group as a
+        # member of a security group.  It also matches sssd's behavior.
 
         group_members = {}
         seen_dns = {}
         if 'member' in objects[object]:
             expand_members(group_members, object, objects, objects[object]['member'], seen_dns)
 
-        # Print the synthesized group(5) entry.
+        # Finally, print the synthesized group(5) entry.
+        #
+        # While we would like to match the member ordering that sssd uses, when
+        # sssd expands group members, it doesn't sort the expanded members
+        # alphabetically.  Nor does sssd enumerate the group members in the
+        # same order as Active Directory.  It's not ordering them by RID,
+        # either.  So attempting to match sssd's ordering is deceptively
+        # challenging.
+        #
+        # As a compromise, we will emit the group membership alphabetically.
+        # While this won't produce the same ordering as sssd, it is the same
+        # membership set, and it will produce the same output on consecutive
+        # invocations.
+
         print("%s:*:%s:%s" % (sam_account_name_lc, base + sid.rid, ','.join(sorted(group_members.keys()))))
 
 # We're done.
