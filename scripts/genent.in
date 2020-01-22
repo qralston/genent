@@ -9,10 +9,10 @@ import sys
 
 # Global variables.
 DEBUG = False
-PROG = 'getent'
+PROG = 'genent'
 QUIET = False
 VERBOSE = False
-VERSION = 'master'
+VERSION = '@PACKAGE_VERSION@'
 
 # Additional global variables.
 input_file = ''
@@ -23,7 +23,6 @@ class objectSID:
     'Operate on a binary-encoded Windows SID object'
 
     def __init__(self, remainder):
-#       remainder = base64.b64decode(base64_sid, altchars=None, validate=True)
         if len(remainder) < 8:
             raise TypeError("objectSid %s is too short to be valid" % sid)
         self.__revision = int(remainder[0])
@@ -290,7 +289,7 @@ def expand_members(sam_account_names, group_to_expand, objects, dn_list, seen_dn
 
 # Initialize a new OptionParser.
 
-p = optparse.OptionParser(description="Generate passwd or group entries from LDIF data.",
+p = optparse.OptionParser(description="Synthesize passwd/group entries from LDIF data.",
                           prog=PROG,
                           usage='%prog [ options ] [ --ldif-file=FILE ] [ --users || --groups ] [ -- ]',
                           version=VERSION)
@@ -319,6 +318,7 @@ if opt.debug:
 if opt.quiet:
     log.setLevel(logging.ERROR)
 
+# If --help was supplied
 # One (and only one) of (--users, --groups) must be specified.
 
 if opt.users and opt.groups:
@@ -410,6 +410,7 @@ objects = parser.objects()
 # enumerate the entries in that order.
 #
 # This is the dictionary we use to store the entries.
+
 entries = {}
 
 for object in objects:

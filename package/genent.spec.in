@@ -1,0 +1,41 @@
+Name: genent
+Version: @PACKAGE_VERSION@
+Release: 1%{?dist}
+Summary: Synthesize passwd/group entries from LDIF data
+
+License: BSD
+URL: https://github.com/qralston/genent
+Source0: %{name}-%{version}.tar.gz
+BuildArchitectures: noarch
+
+Requires: %{py3_dist python-ldap} >= 3.0
+
+
+%description
+genent synthesizes passwd(5) or group(5) entries from LDIF data, mimicking
+entries produced by the "ldap_id_mapping = true" feature of the SSSD Active
+Directory provider.
+
+
+%prep
+%autosetup
+
+
+%build
+%configure
+%make_build
+
+
+%install
+%make_install
+
+
+%files
+%license LICENSE.md
+%doc README.md TODO.md
+%{_bindir}/genent
+
+
+%changelog
+* Wed Jan 22 2020 James Ralston <ralston@pobox.com> - 1.0.0-1
+- created the RPM spec file

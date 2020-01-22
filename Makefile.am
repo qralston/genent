@@ -1,0 +1,5 @@
+SUBDIRS = package scripts
+
+EXTRA_DIST = LICENSE.md README.md TODO.md
+
+AM_CFLAGS = @AM_CFLAGS@

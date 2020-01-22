@@ -1,6 +1,6 @@
 # Introduction
 
-`genent` generates `passwd(5)` and/or `group(5)` entries from LDIF
+`genent` synthesizes `passwd(5)` and/or `group(5)` entries from LDIF
 data, mimicking entries produced by the `ldap_id_mapping = true`
 feature of the SSSD Active Directory provider.
 
@@ -48,10 +48,26 @@ an Active Directory object to a `passwd(5)` or `group(5)` entry.
 
 The `genent` program bridges this gap.  At the cost of a single
 `getgrnam()` call through the SSSD Active Directory provider, `genent`
-produces either `passwd(5)` or `group(5)` entries that match the
-entries that the SSSD Active Directory provider produces.  The
+produces either `passwd(5)` or `group(5)` entries that are equivalent
+to the entries that the SSSD Active Directory provider produces.  The
 resulting `passwd(5)` and `group(5)` files can be loaded onto the
 systems that do not support sssd-style ID mapping.
+
+# Requirements
+
+`genent` is written in Python version 3, and as such requires a
+Unix/Linux distribution with a Python 3 stack.
+
+`genent` requires [python-ldap](https://www.python-ldap.org/) version
+3.0.0 or later for Python 3.
+
+Unix/Linux distributions known to support these requirements out of
+the box (i.e., with distro-packaged software) are:
+
+* CentOS 8
+* Fedora 30
+* Fedora 31
+* Red Hat Enterprise Linux 8
 
 # Operation
 
