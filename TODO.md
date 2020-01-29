@@ -4,15 +4,6 @@ I typically write in other languages than Python, and `genent` is the
 largest complete Python program I’ve written in Python.  As such,
 there undoubtably many areas where `genent` could be more Pythonic.
 
-# Support reading multiple LDIF files
-
-Instead of taking the LDIF file to read via the `--ldif-file` option,
-we should assume that all non-option arguments are LDIF files to read,
-and read them in order.
-
-This would be useful for sites that are dumping Active Directory
-objects by objectClass; e.g., `users.ldif` and `groups.ldif`.
-
 # Add a man page
 
 While the `--help` option should suffice for now, write a real man

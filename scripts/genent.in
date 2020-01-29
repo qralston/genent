@@ -1,9 +1,9 @@
 #! /usr/bin/python3
 
 from ldif import LDIFParser
+import argparse
 import base64
 import logging
-import optparse
 import grp
 import sys
 
@@ -14,10 +14,13 @@ QUIET = False
 VERBOSE = False
 VERSION = '@PACKAGE_VERSION@'
 
-# Additional global variables.
-input_file = ''
-output_file = ''
-max_group_recursion_level = 32
+# This is a global dictionary to which MyLDIF adds the objects it parses from
+# the LDIF files it reads.
+objects = {}
+
+# This is a global dictionary that MyLDIF uses to avoid adding two objects with
+# the same sAMAccountName.
+seen_sam_account_names = {}
 
 class objectSID:
     'Operate on a binary-encoded Windows SID object'
@@ -64,9 +67,6 @@ class objectSID:
 
 class MyLDIF(LDIFParser):
 
-    # We use this attribute to accumulate the LDIF objects we have parsed.
-    _objects = {}
-
     class MyLDIF(LDIFParser):
         def __init__(
                 self,
@@ -85,8 +85,6 @@ class MyLDIF(LDIFParser):
 
         object_sid = ''
         cn = ''
-
-        seen_sam_account_names = {}
 
         is_user = False
         is_computer = False
@@ -215,13 +213,13 @@ class MyLDIF(LDIFParser):
         # If we have already seen an object that has the same dn as this
         # object, skip this one.
 
-        if dn in self._objects:
-            log.warning('already encountered object with dn=%s; skipping dn=%s', self._objects[dn], dn)
+        if dn in objects:
+            log.warning('already encountered object with dn=%s; skipping dn=%s', objects[dn], dn)
             return 1
 
         # If we made it to here, all sanity checks passed, so add this entry.
 
-        self._objects[dn] = {
+        objects[dn] = {
             'objectSid': object_sid,
             'sAMAccountName': sam_account_name,
             'cn': cn,
@@ -237,18 +235,14 @@ class MyLDIF(LDIFParser):
 
             # Add the groupType.
 
-            self._objects[dn]['groupType'] = grouptype
+            objects[dn]['groupType'] = grouptype
 
             # Add any member attributes.
 
             if 'member' in entry:
-                self._objects[dn]['member'] = []
+                objects[dn]['member'] = []
                 for member in entry['member']:
-                    self._objects[dn]['member'].append(member.decode())
-
-    # A simple method to return our objects.
-    def objects(self):
-        return self._objects
+                    objects[dn]['member'].append(member.decode())
 
 def expand_members(sam_account_names, group_to_expand, objects, dn_list, seen_dns):
 
@@ -287,65 +281,74 @@ def expand_members(sam_account_names, group_to_expand, objects, dn_list, seen_dn
                 # objects in the LDIF dump (not just users/groups).  FIXME?
                 log.debug('unknown dn=%s encountered when expanding group %s', dn, group_to_expand)
 
-# Initialize a new OptionParser.
+# Initialize a new ArgumentParser.
 
-p = optparse.OptionParser(description="Synthesize passwd/group entries from LDIF data.",
-                          prog=PROG,
-                          usage='%prog [ options ] [ --ldif-file=FILE ] [ --users || --groups ] [ -- ]',
-                          version=VERSION)
+p = argparse.ArgumentParser(description="Synthesize passwd/group entries from LDIF data.",
+                            prog=PROG,
+                            usage='%(prog)s [ options ] { --users || --groups } [ -- ] [ file … ]')
 
 # Standard options.
-p.add_option("-d", "--debug", action="store_true", dest="debug", help="enable debugging messages")
-p.add_option("-q", "--quiet", action="store_true", dest="quiet", help="suppress all messages except errors")
-p.add_option("-v", "--verbose", action="store_true", dest="verbose", help="enable verbose messages")
+p.add_argument("-d", "--debug", action="store_true", dest="debug", help="enable debugging messages")
+p.add_argument("-q", "--quiet", action="store_true", dest="quiet", help="suppress all messages except errors")
+p.add_argument("-v", "--verbose", action="store_true", dest="verbose", help="enable verbose messages")
+p.add_argument("--version", action='version', version='%s %s' % (PROG, VERSION))
 
 # Additional options.
-p.add_option("-a", "--all-groups", action="store_true", dest="map_all_groups", help="map all group types instead of only non-system security groups")
-p.add_option("-l", "--ldif-file", action="store", dest="ldif_file", help="the LDIF file to read")
-p.add_option("-u", "--users", action="store_true", dest="users", help="emit passwd(5) entries")
-p.add_option("-g", "--groups", action="store_true", dest="groups", help="emit group(5) entries")
+p.add_argument("-a", "--all-groups", action="store_true", dest="map_all_groups", help="map all group types instead of only non-system security groups")
+
+# The --users and --groups options are mutually exclusive.
+group = p.add_mutually_exclusive_group()
+group.add_argument("-u", "--users", action="store_true", dest="users", help="emit passwd(5) entries")
+group.add_argument("-g", "--groups", action="store_true", dest="groups", help="emit group(5) entries")
+
+# Note LDIF files to read, if any.
+p.add_argument('files', nargs='*', help='read LDIF records from file(s) instead of stdin')
 
 # Parse options.
-opt, args = p.parse_args()
+args = p.parse_args()
 
 # Initialize logging.
 logging.basicConfig(format = '%(name)s: %(levelname)s: %(message)s')
 log = logging.getLogger(PROG)
-if opt.verbose:
+if args.verbose:
     log.setLevel(logging.INFO)
-if opt.debug:
+if args.debug:
     log.setLevel(logging.DEBUG)
-if opt.quiet:
+if args.quiet:
     log.setLevel(logging.ERROR)
 
-# If --help was supplied
 # One (and only one) of (--users, --groups) must be specified.
-
-if opt.users and opt.groups:
-    log.error('only one of --users or --groups can be specified')
-    raise SystemExit(1)
-
-if not (opt.users or opt.groups):
+if not (args.users or args.groups):
     log.error('one of --users or --groups is required')
     raise SystemExit(1)
 
-# Parse the LDIF records.
+# Now, from what source do we read LDIF records?
 
-if opt.ldif_file:
-    log.debug('opening LDIF file %s', opt.ldif_file)
-    try:
-        with open(opt.users_ldif_file, 'rb') as input_file:
-            log.info('parsing input file %s', opt.users_ldif_file)
-            parser = MyLDIF(input_file)
-            parser.parse()
-    except IOError as e:
-        log.error('unable to open/process %s: %s', opt.ldif_file, e)
-        raise SystemExit(1)
-else:
-    log.info("parsing stdin")
+if len(args.files) == 0:
+
+    # No LDIF files were supplied on the command line, so read from stdin.
+
+    log.info('parsing LDIF records from stdin')
     parser = MyLDIF(sys.stdin)
     parser.parse()
 
+else:
+
+    # LDIF files were specified, so parse LDIF objects from each file in turn.
+
+    for ldif_file in args.files:
+        log.info('parsing LDIF objects from file %s' % ldif_file)
+        try:
+            with open(ldif_file, 'rb') as input_file:
+                parser = MyLDIF(input_file)
+                parser.parse()
+            log.info('done parsing LDIF objects from file %s (updated object count: %d)' % (ldif_file, len(objects)))
+        except IOError as e:
+            log.error('unable to open/process %s: %s', ldif_file, e)
+            raise SystemExit(1)
+
+# At this point, all LDIF files are parsed.
+#
 # Regardless of whether we are emitting passwd(5) or group(5) entries, we need
 # to calculate the base id value that sssd is using for the domain.
 #
@@ -390,9 +393,6 @@ gid_domain_controllers = base + 516
 # Both the users and groups case use the issuer.
 issuer = ''
 
-# Obtain the objects to enumerate.
-objects = parser.objects()
-
 # For Python 3.6 and later, enumerating dictionaries is guaranteed to enumerate
 # them in insertion order:
 #
@@ -418,7 +418,7 @@ for object in objects:
     # If we're looking for users, skip objects that aren't users; if we're
     # looking for groups, skip objects that aren't groups.
 
-    if opt.users:
+    if args.users:
         if not objects[object]['is_user']:
             continue
     else:
@@ -449,7 +449,7 @@ for object in objects:
     # Use the lowercase version of the sAMAccountName attribute, the same as sssd.
     sam_account_name_lc = objects[object]['sAMAccountName'].lower()
 
-    if opt.users:
+    if args.users:
 
         # We're emitting a user.  What pw_gid value should we use for this
         # user?
@@ -499,7 +499,7 @@ for object in objects:
         # But if --all-groups was specified, then we ignore all of this and
         # emit every group anyway.
 
-        if opt.map_all_groups:
+        if args.map_all_groups:
             log.debug('skipping groupType checks for %s because --all-groups was specified', object)
         else:
             if objects[object]['groupType'] >= 0:
