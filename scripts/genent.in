@@ -168,8 +168,8 @@ class MyLDIF(LDIFParser):
         # some other object.
         #
         # Note that we perform this comparison against the lowercased
-        # sAMAccountName value, as we lowercase it by default when we output
-        # it.
+        # sAMAccountName value, as Active Directory is case-aware but not
+        # case-sensitive.
 
         if sam_account_name_lc in seen_sam_account_names:
             log.warning('entry dn=%s sAMAccountName attribute duplicates sAMAccountName for dn=%s', dn, seen_sam_account_names[sam_account_name_lc])
@@ -264,8 +264,8 @@ def expand_members(sam_account_names, group_to_expand, objects, dn_list, seen_dn
             if dn in objects:
                 object = objects[dn]
                 if object['is_user']:
-                    log.debug('expanded user dn=%s as member of group %s', object['sAMAccountName'].lower(), group_to_expand)
-                    sam_account_names[object['sAMAccountName'].lower()] = 1
+                    log.debug('expanded user dn=%s as member of group %s', object['sAMAccountName'], group_to_expand)
+                    sam_account_names[object['sAMAccountName']] = 1
                 else:
                     if 'member' in objects[dn]:
                         log.debug('group dn=%s in group %s has members; expanding recursively', dn, group_to_expand)
@@ -295,6 +295,7 @@ p.add_argument("--version", action='version', version='%s %s' % (PROG, VERSION))
 
 # Additional options.
 p.add_argument("-a", "--all-groups", action="store_true", dest="map_all_groups", help="map all group types instead of only non-system security groups")
+p.add_argument("-p", "--preserve-case", action="store_true", dest="preserve_case", help="preserve case in user/group names")
 
 # The --users and --groups options are mutually exclusive.
 group = p.add_mutually_exclusive_group()
@@ -446,9 +447,6 @@ for object in objects:
     else:
         issuer = sid.issuer
 
-    # Use the lowercase version of the sAMAccountName attribute, the same as sssd.
-    sam_account_name_lc = objects[object]['sAMAccountName'].lower()
-
     if args.users:
 
         # We're emitting a user.  What pw_gid value should we use for this
@@ -467,8 +465,10 @@ for object in objects:
         pw_uid = base + sid.rid
         if pw_uid in entries:
             log.warning('skipping object %s: id %u duplicates existing entry %s', object, pw_uid, entries[pw_uid])
+        elif args.preserve_case:
+            entries[pw_uid] = "%s:*:%s:%s:%s:/home/%s:/bin/bash" % (objects[object]['sAMAccountName'], pw_uid, pw_gid, objects[object]['cn'], objects[object]['sAMAccountName'])
         else:
-            entries[pw_uid] = "%s:*:%s:%s:%s:/home/%s:/bin/bash" % (sam_account_name_lc, pw_uid, pw_gid, objects[object]['cn'], sam_account_name_lc)
+            entries[pw_uid] = "%s:*:%s:%s:%s:/home/%s:/bin/bash" % (objects[object]['sAMAccountName'].lower(), pw_uid, pw_gid, objects[object]['cn'], objects[object]['sAMAccountName'].lower())
 
     else:
 
@@ -551,8 +551,10 @@ for object in objects:
         gr_gid = base + sid.rid
         if gr_gid in entries:
             log.warning('skipping object %s: id %u duplicates existing entry %s', object, gr_gid, entries[gr_gid])
+        elif args.preserve_case:
+            entries[gr_gid] = "%s:*:%s:%s" % (objects[object]['sAMAccountName'], gr_gid, ','.join(sorted(group_members.keys())))
         else:
-            entries[gr_gid] = "%s:*:%s:%s" % (sam_account_name_lc, gr_gid, ','.join(sorted(group_members.keys())))
+            entries[gr_gid] = "%s:*:%s:%s" % (objects[object]['sAMAccountName'].lower(), gr_gid, ','.join(sorted(group_members.keys())).lower())
 
 # Finally, print the entries we accumulated, sorted by the uid (or gid).
 
